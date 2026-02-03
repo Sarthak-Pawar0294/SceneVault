@@ -44,6 +44,55 @@ export const youtubeService = {
     }
   },
 
+  async fetchVideoPrivacyStatusBatch(videoIds: string[], apiKey: string): Promise<Record<string, string>> {
+    const ids = (videoIds || []).map((v) => String(v || '').trim()).filter(Boolean);
+    if (ids.length === 0) return {};
+    if (!apiKey) throw new Error('YouTube API key not configured. Go to Settings.');
+    if (ids.length > 50) throw new Error('Too many video IDs for one request (max 50).');
+
+    const parseYouTubeError = async (res: Response) => {
+      const rawText = await res.text().catch(() => '');
+      const parsed = (() => {
+        try {
+          return JSON.parse(rawText || '{}');
+        } catch {
+          return {};
+        }
+      })() as any;
+      const message = parsed?.error?.message || `YouTube API request failed (${res.status})`;
+      return { message };
+    };
+
+    const url = new URL('https://www.googleapis.com/youtube/v3/videos');
+    url.searchParams.set('part', 'status');
+    url.searchParams.set('id', ids.join(','));
+    url.searchParams.set('key', apiKey);
+
+    const response = await fetch(url.toString());
+    if (!response.ok) {
+      const { message } = await parseYouTubeError(response);
+      const lower = String(message || '').toLowerCase();
+      if (response.status === 403 && lower.includes('quota')) {
+        throw new Error('YouTube API quota exceeded. Please try again tomorrow.');
+      }
+      if (response.status === 403) {
+        throw new Error('Invalid YouTube API key. Please check your API key in Settings.');
+      }
+      throw new Error(message || 'Failed to check video status');
+    }
+
+    const data: any = await response.json().catch(() => ({}));
+    const items: any[] = Array.isArray(data?.items) ? data.items : [];
+    const map: Record<string, string> = {};
+    for (const it of items) {
+      const id = String(it?.id || '').trim();
+      if (!id) continue;
+      const privacy = String(it?.status?.privacyStatus || '').trim();
+      if (privacy) map[id] = privacy;
+    }
+    return map;
+  },
+
   async importPlaylist(
     playlistUrlOrId: string,
     category: Category,

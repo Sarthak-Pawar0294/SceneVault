@@ -1,20 +1,30 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Film, Plus } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Film, Loader2, Plus, RefreshCw } from 'lucide-react';
 import { PlatformHeader } from '../components/platform/PlatformHeader';
 import { StatsBar } from '../components/platform/StatsBar';
-import { AdvancedSearchBar, AdvancedSortOption, FilterChipId } from '../components/platform/AdvancedSearchBar';
+import {
+  AdvancedFilters,
+  AdvancedSearchBar,
+  AdvancedSortOption,
+  defaultAdvancedFilters,
+  FilterChipId,
+} from '../components/platform/AdvancedSearchBar';
 import { EmptyState } from '../components/platform/EmptyState';
 import { SceneCard } from '../components/Dashboard/SceneCard';
 import { SceneForm } from '../components/Dashboard/SceneForm';
 import { SceneDetailModal } from '../components/Dashboard/SceneDetailModal';
 import { SceneGridSkeleton } from '../components/Dashboard/Skeletons';
+import { CheckAllVideosModal } from '../components/Dashboard/CheckAllVideosModal';
 import { useAuth } from '../contexts/AuthContext';
 import { useDebounce } from '../hooks/useDebounce';
 import { sceneService, sceneTagsService, tagService, youtubeService } from '../services';
 import { Scene, SceneFormData, Tag } from '../types';
+import { supabase } from '../lib/supabase';
 
 export function AllScenesPage() {
   const { user } = useAuth();
+  const navigate = useNavigate();
 
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [allTags, setAllTags] = useState<Tag[]>([]);
@@ -24,12 +34,19 @@ export function AllScenesPage() {
   const [query, setQuery] = useState('');
   const [sortBy, setSortBy] = useState<AdvancedSortOption>('newest');
   const [activeChip, setActiveChip] = useState<FilterChipId>('all');
+  const [filters, setFilters] = useState<AdvancedFilters>(defaultAdvancedFilters);
 
   const debouncedQuery = useDebounce(query, 300);
 
   const [showForm, setShowForm] = useState(false);
   const [editingScene, setEditingScene] = useState<Scene | undefined>(undefined);
   const [detailScene, setDetailScene] = useState<Scene | undefined>(undefined);
+
+  const [checkModalOpen, setCheckModalOpen] = useState(false);
+  const [checkingAll, setCheckingAll] = useState(false);
+  const [checkProgress, setCheckProgress] = useState({ current: 0, total: 0 });
+  const [checkError, setCheckError] = useState<string | null>(null);
+  const cancelCheckRef = useRef(false);
 
   const loadData = useCallback(async () => {
     if (!user?.id) return;
@@ -89,6 +106,33 @@ export function AllScenesPage() {
       }
     }
 
+    if (filters.categories.length > 0) {
+      filtered = filtered.filter((s) => filters.categories.includes(s.category));
+    }
+
+    if (filters.platforms.length > 0) {
+      filtered = filtered.filter((s) => filters.platforms.includes(s.platform));
+    }
+
+    if (filters.statuses.length > 0) {
+      filtered = filtered.filter((s) => {
+        const wantsAvailable = filters.statuses.includes('available');
+        const wantsUnavailable = filters.statuses.includes('unavailable');
+        const isUnavailable = s.status === 'unavailable' || s.status === 'private';
+        return (wantsAvailable && s.status === 'available') || (wantsUnavailable && isUnavailable);
+      });
+    }
+
+    if (filters.dateRange !== 'all') {
+      const now = Date.now();
+      const days = filters.dateRange === '7d' ? 7 : (filters.dateRange === '30d' ? 30 : 90);
+      const cutoff = now - days * 24 * 60 * 60 * 1000;
+      filtered = filtered.filter((s) => {
+        const t = new Date(s.created_at).getTime();
+        return Number.isFinite(t) && t >= cutoff;
+      });
+    }
+
     switch (sortBy) {
       case 'newest':
         filtered.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
@@ -105,7 +149,7 @@ export function AllScenesPage() {
     }
 
     return filtered;
-  }, [activeChip, debouncedQuery, scenes, sortBy]);
+  }, [activeChip, debouncedQuery, filters.categories, filters.dateRange, filters.platforms, filters.statuses, scenes, sortBy]);
 
   const handleOpenAdd = () => {
     setEditingScene(undefined);
@@ -143,6 +187,69 @@ export function AllScenesPage() {
 
     await sceneTagsService.replaceTagsForScene(created.id, tagIds || []);
     await loadData();
+  };
+
+  const handleCancelCheckAll = () => {
+    cancelCheckRef.current = true;
+    setCheckingAll(false);
+  };
+
+  const handleCheckAllVideos = async () => {
+    if (!user?.id) return;
+
+    const youtubeScenes = scenes.filter((s) => s.platform === 'YouTube' && !!s.video_id);
+    const total = youtubeScenes.length;
+
+    cancelCheckRef.current = false;
+    setCheckError(null);
+    setCheckProgress({ current: 0, total });
+    setCheckModalOpen(true);
+
+    const apiKey = localStorage.getItem('youtube_api_key') || '';
+    if (!apiKey) {
+      setCheckError('YouTube API key not configured. Go to Settings.');
+      return;
+    }
+
+    setCheckingAll(true);
+    let checkedCount = 0;
+
+    try {
+      for (let i = 0; i < youtubeScenes.length; i += 50) {
+        if (cancelCheckRef.current) break;
+
+        const batch = youtubeScenes.slice(i, i + 50);
+        const ids = batch.map((s) => s.video_id || '').filter(Boolean);
+        const statusMap = await youtubeService.fetchVideoPrivacyStatusBatch(ids, apiKey);
+
+        for (const scene of batch) {
+          if (cancelCheckRef.current) break;
+
+          const privacy = statusMap[scene.video_id || ''];
+          let newStatus: 'available' | 'unavailable' | 'private' = 'unavailable';
+          if (privacy) {
+            if (privacy === 'public') newStatus = 'available';
+            else if (privacy === 'private') newStatus = 'private';
+            else newStatus = 'unavailable';
+          }
+
+          const { error: updateErr } = await supabase
+            .from('scenes')
+            .update({ status: newStatus, updated_at: new Date().toISOString() })
+            .eq('id', scene.id);
+          if (updateErr) throw updateErr;
+
+          checkedCount++;
+          setCheckProgress({ current: checkedCount, total });
+        }
+      }
+
+      await loadData();
+      setCheckingAll(false);
+    } catch (e: any) {
+      setCheckingAll(false);
+      setCheckError(e?.message || 'Failed to check videos');
+    }
   };
 
   const handleUpdateScene = async (data: SceneFormData) => {
@@ -192,6 +299,14 @@ export function AllScenesPage() {
           onClick: handleOpenAdd,
           icon: <Plus className="w-5 h-5" />,
         }}
+        menuActions={[
+          {
+            label: checkingAll ? 'Checking…' : 'Check All Videos',
+            onClick: handleCheckAllVideos,
+            icon: checkingAll ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />,
+            disabled: checkingAll,
+          },
+        ]}
       />
 
       <StatsBar
@@ -210,7 +325,25 @@ export function AllScenesPage() {
         onSortByChange={setSortBy}
         activeChip={activeChip}
         onChipChange={setActiveChip}
-        onOpenFilters={() => {}}
+        enablePlatformFilter
+        filters={filters}
+        onApplyFilters={setFilters}
+        onClearAllFilters={() => setFilters(defaultAdvancedFilters)}
+      />
+
+      <CheckAllVideosModal
+        open={checkModalOpen}
+        checking={checkingAll}
+        current={checkProgress.current}
+        total={checkProgress.total}
+        error={checkError}
+        onCancel={handleCancelCheckAll}
+        onClose={() => {
+          if (checkingAll) return;
+          setCheckModalOpen(false);
+          setCheckError(null);
+        }}
+        onOpenSettings={() => navigate('/settings')}
       />
 
       {loading && <SceneGridSkeleton count={12} />}
@@ -236,7 +369,7 @@ export function AllScenesPage() {
       )}
 
       {!loading && !error && filteredScenes.length > 0 && (
-        <div className="grid [grid-template-columns:repeat(auto-fill,minmax(320px,1fr))] gap-6">
+        <div className="grid grid-cols-1 sm:[grid-template-columns:repeat(auto-fill,minmax(320px,1fr))] gap-6">
           {filteredScenes.map((scene) => (
             <SceneCard
               key={scene.id}
@@ -270,6 +403,14 @@ export function AllScenesPage() {
           }}
           onDelete={handleDeleteScene}
           onCheckStatus={handleCheckStatus}
+          onUpdate={async (scene, data) => {
+            await sceneService.updateScene(scene.id, {
+              ...data,
+              updated_at: new Date().toISOString(),
+            } as any);
+            await loadData();
+            setDetailScene((prev) => (prev && prev.id === scene.id ? { ...prev, ...data, updated_at: new Date().toISOString() } as any : prev));
+          }}
         />
       )}
     </div>

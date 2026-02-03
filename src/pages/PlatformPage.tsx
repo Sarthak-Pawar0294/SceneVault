@@ -1,19 +1,28 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Grid, Monitor, PlaySquare, Plus, Tv, Youtube } from 'lucide-react';
+import { ArrowLeft, Grid, Loader2, Monitor, PlaySquare, Plus, RefreshCw, Tv, Youtube } from 'lucide-react';
 import { PlatformHeader } from '../components/platform/PlatformHeader';
 import { StatsBar } from '../components/platform/StatsBar';
-import { AdvancedSearchBar, AdvancedSortOption, FilterChipId } from '../components/platform/AdvancedSearchBar';
+import {
+  AdvancedFilters,
+  AdvancedSearchBar,
+  AdvancedSortOption,
+  defaultAdvancedFilters,
+  FilterChipId,
+} from '../components/platform/AdvancedSearchBar';
 import { EmptyState } from '../components/platform/EmptyState';
 import { SceneCard } from '../components/Dashboard/SceneCard';
 import { SceneForm } from '../components/Dashboard/SceneForm';
 import { SceneDetailModal } from '../components/Dashboard/SceneDetailModal';
 import { SceneGridSkeleton, PlaylistGridSkeleton } from '../components/Dashboard/Skeletons';
+import { CheckAllVideosModal } from '../components/Dashboard/CheckAllVideosModal';
+import { RefreshPlaylistModal } from '../components/Dashboard/RefreshPlaylistModal';
 import { YouTubeImport } from '../components/Dashboard/YouTubeImport';
 import { useAuth } from '../contexts/AuthContext';
 import { useDebounce } from '../hooks/useDebounce';
 import { sceneService, sceneTagsService, tagService, youtubeService } from '../services';
 import { Category, Platform, Scene, SceneFormData, Tag, YouTubePlaylist } from '../types';
+import { supabase } from '../lib/supabase';
 
 function formatPlatformName(segment: string | undefined): string {
   const s = (segment || '').toLowerCase();
@@ -86,6 +95,7 @@ export function PlatformPage() {
   const [query, setQuery] = useState('');
   const [sortBy, setSortBy] = useState<AdvancedSortOption>('newest');
   const [activeChip, setActiveChip] = useState<FilterChipId>('all');
+  const [filters, setFilters] = useState<AdvancedFilters>(defaultAdvancedFilters);
 
   const debouncedQuery = useDebounce(query, 300);
 
@@ -95,6 +105,20 @@ export function PlatformPage() {
 
   const [selectedYouTubePlaylistId, setSelectedYouTubePlaylistId] = useState<string | null>(null);
   const [showYouTubeImport, setShowYouTubeImport] = useState(false);
+
+  const [checkModalOpen, setCheckModalOpen] = useState(false);
+  const [checkingAll, setCheckingAll] = useState(false);
+  const [checkProgress, setCheckProgress] = useState({ current: 0, total: 0 });
+  const [checkError, setCheckError] = useState<string | null>(null);
+  const cancelCheckRef = useRef(false);
+
+  const [refreshModalOpen, setRefreshModalOpen] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshProgress, setRefreshProgress] = useState('');
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [refreshResult, setRefreshResult] = useState<{ newVideos: number; totalVideos: number } | null>(null);
+  const [refreshingPlaylistId, setRefreshingPlaylistId] = useState<string | null>(null);
+  const cancelRefreshRef = useRef(false);
 
   const isYouTube = (platform || '').toLowerCase() === 'youtube';
   const description = isYouTube
@@ -136,7 +160,7 @@ export function PlatformPage() {
   }, [platformType, scenes]);
 
   const playlistsForCards = useMemo(() => {
-    if (!isYouTube) return [] as Array<{ playlist_id: string; title: string; thumbnail?: string; video_count: number }>;
+    if (!isYouTube) return [] as Array<{ playlist_id: string; title: string; thumbnail?: string; video_count: number; hasMeta: boolean }>;
 
     const playlistSceneCounts = platformScenes
       .filter((s) => s.platform === 'YouTube' && s.source_type === 'youtube_playlist' && !!s.playlist_id)
@@ -163,6 +187,7 @@ export function PlatformPage() {
         thumbnail: p.thumbnail,
         video_count: p.video_count,
         imported_at: p.imported_at,
+        hasMeta: true,
       })),
       ...Array.from(playlistIdSet)
         .filter((id) => !youtubePlaylists.some((p) => p.playlist_id === id))
@@ -172,6 +197,7 @@ export function PlatformPage() {
           thumbnail: playlistFirstThumb[id] || '',
           video_count: playlistSceneCounts[id] || 0,
           imported_at: '',
+          hasMeta: false,
         })),
     ].sort((a, b) => {
       const aTime = a.imported_at ? new Date(a.imported_at).getTime() : 0;
@@ -215,6 +241,29 @@ export function PlatformPage() {
       }
     }
 
+    if (filters.categories.length > 0) {
+      filtered = filtered.filter((s) => filters.categories.includes(s.category));
+    }
+
+    if (filters.statuses.length > 0) {
+      filtered = filtered.filter((s) => {
+        const wantsAvailable = filters.statuses.includes('available');
+        const wantsUnavailable = filters.statuses.includes('unavailable');
+        const isUnavailable = s.status === 'unavailable' || s.status === 'private';
+        return (wantsAvailable && s.status === 'available') || (wantsUnavailable && isUnavailable);
+      });
+    }
+
+    if (filters.dateRange !== 'all') {
+      const now = Date.now();
+      const days = filters.dateRange === '7d' ? 7 : (filters.dateRange === '30d' ? 30 : 90);
+      const cutoff = now - days * 24 * 60 * 60 * 1000;
+      filtered = filtered.filter((s) => {
+        const t = new Date(s.created_at).getTime();
+        return Number.isFinite(t) && t >= cutoff;
+      });
+    }
+
     switch (sortBy) {
       case 'newest':
         filtered.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
@@ -231,7 +280,7 @@ export function PlatformPage() {
     }
 
     return filtered;
-  }, [activeChip, debouncedQuery, filteredPlatformScenes, sortBy]);
+  }, [activeChip, debouncedQuery, filters.categories, filters.dateRange, filters.statuses, filteredPlatformScenes, sortBy]);
 
   const stats = useMemo(() => {
     const available = platformScenes.filter((s) => s.status === 'available').length;
@@ -285,6 +334,85 @@ export function PlatformPage() {
     await loadData();
   };
 
+  const handleCancelCheckAll = () => {
+    cancelCheckRef.current = true;
+    setCheckingAll(false);
+  };
+
+  const handleCheckAllVideos = async () => {
+    if (!user?.id) return;
+    if (!isYouTube) return;
+
+    const youtubeScenes = scenes.filter((s) => s.platform === 'YouTube' && !!s.video_id);
+    const total = youtubeScenes.length;
+
+    cancelCheckRef.current = false;
+    setCheckError(null);
+    setCheckProgress({ current: 0, total });
+    setCheckModalOpen(true);
+
+    const apiKey = localStorage.getItem('youtube_api_key') || '';
+    if (!apiKey) {
+      setCheckError('YouTube API key not configured. Go to Settings.');
+      return;
+    }
+
+    setCheckingAll(true);
+    let checkedCount = 0;
+    let availableCount = 0;
+    let unavailableCount = 0;
+
+    try {
+      for (let i = 0; i < youtubeScenes.length; i += 50) {
+        if (cancelCheckRef.current) break;
+
+        const batch = youtubeScenes.slice(i, i + 50);
+        const ids = batch.map((s) => s.video_id || '').filter(Boolean);
+        const statusMap = await youtubeService.fetchVideoPrivacyStatusBatch(ids, apiKey);
+
+        for (const scene of batch) {
+          if (cancelCheckRef.current) break;
+          const privacy = statusMap[scene.video_id || ''];
+
+          let newStatus: 'available' | 'unavailable' | 'private' = 'unavailable';
+          if (privacy) {
+            if (privacy === 'public') {
+              newStatus = 'available';
+              availableCount++;
+            } else if (privacy === 'private') {
+              newStatus = 'private';
+              unavailableCount++;
+            } else {
+              newStatus = 'unavailable';
+              unavailableCount++;
+            }
+          } else {
+            unavailableCount++;
+          }
+
+          const { error: updateErr } = await supabase
+            .from('scenes')
+            .update({ status: newStatus, updated_at: new Date().toISOString() })
+            .eq('id', scene.id);
+          if (updateErr) throw updateErr;
+
+          checkedCount++;
+          setCheckProgress({ current: checkedCount, total });
+        }
+      }
+
+      await loadData();
+      setCheckingAll(false);
+
+      if (!cancelCheckRef.current) {
+        alert(`Check complete!\n${availableCount} available\n${unavailableCount} unavailable`);
+      }
+    } catch (e: any) {
+      setCheckingAll(false);
+      setCheckError(e?.message || 'Failed to check videos');
+    }
+  };
+
   const handleUpdateScene = async (data: SceneFormData) => {
     if (!editingScene) return;
 
@@ -334,6 +462,175 @@ export function PlatformPage() {
 
   const showPlaylistGrid = isYouTube && !selectedYouTubePlaylistId;
 
+  const selectedPlaylistMeta = useMemo(() => {
+    if (!isYouTube || !selectedYouTubePlaylistId || selectedYouTubePlaylistId === '__manual__') return null;
+    return youtubePlaylists.find((p) => p.playlist_id === selectedYouTubePlaylistId) || null;
+  }, [isYouTube, selectedYouTubePlaylistId, youtubePlaylists]);
+
+  const handleCancelRefresh = () => {
+    cancelRefreshRef.current = true;
+    setRefreshProgress('Canceling...');
+  };
+
+  const handleRefreshPlaylist = async (playlistId: string, playlistTitle?: string) => {
+    if (!user?.id) return;
+    if (!isYouTube) return;
+    if (!playlistId || playlistId === '__manual__') return;
+    if (refreshing) return;
+
+    cancelRefreshRef.current = false;
+    setRefreshError(null);
+    setRefreshResult(null);
+    setRefreshProgress('Fetching latest videos from YouTube...');
+    setRefreshing(true);
+    setRefreshingPlaylistId(playlistId);
+    setRefreshModalOpen(true);
+
+    try {
+      const apiKey = localStorage.getItem('youtube_api_key') || '';
+      if (!apiKey) throw new Error('YouTube API key not configured. Go to Settings.');
+
+      const { data: authData, error: authErr } = await supabase.auth.getUser();
+      if (authErr) throw authErr;
+      const authUser = authData.user;
+      if (!authUser?.id) throw new Error('Not authenticated');
+
+      const allYoutubeVideos: Array<{
+        videoId: string;
+        title: string;
+        thumbnail?: string;
+        channelTitle?: string;
+        url: string;
+      }> = [];
+
+      let nextPageToken: string | null = null;
+      do {
+        if (cancelRefreshRef.current) break;
+
+        const url = new URL('https://www.googleapis.com/youtube/v3/playlistItems');
+        url.searchParams.set('part', 'snippet');
+        url.searchParams.set('playlistId', playlistId);
+        url.searchParams.set('maxResults', '50');
+        url.searchParams.set('key', apiKey);
+        if (nextPageToken) url.searchParams.set('pageToken', nextPageToken);
+
+        const response = await fetch(url.toString());
+        const data: any = await response.json().catch(() => ({}));
+        if (data?.error) {
+          throw new Error(`YouTube API Error: ${data.error.message || 'Unknown error'}`);
+        }
+
+        const items: any[] = Array.isArray(data?.items) ? data.items : [];
+        const videos = items
+          .filter((item) => item?.snippet?.resourceId?.videoId)
+          .map((item) => {
+            const vid = String(item.snippet.resourceId.videoId);
+            const title = String(item?.snippet?.title || '').trim() || `Video: ${vid}`;
+            const thumb =
+              item?.snippet?.thumbnails?.medium?.url ||
+              item?.snippet?.thumbnails?.default?.url ||
+              '';
+            const channelTitle = String(item?.snippet?.channelTitle || '').trim();
+            return {
+              videoId: vid,
+              title,
+              thumbnail: thumb,
+              channelTitle,
+              url: `https://www.youtube.com/watch?v=${vid}`,
+            };
+          });
+
+        allYoutubeVideos.push(...videos);
+        nextPageToken = data?.nextPageToken || null;
+      } while (nextPageToken);
+
+      if (cancelRefreshRef.current) {
+        setRefreshProgress('Canceled.');
+        return;
+      }
+
+      setRefreshProgress('Checking for new videos...');
+
+      const { data: existingScenes, error: existingErr } = await supabase
+        .from('scenes')
+        .select('video_id')
+        .eq('user_id', authUser.id)
+        .eq('platform', 'YouTube')
+        .eq('playlist_id', playlistId)
+        .not('video_id', 'is', 'null');
+      if (existingErr) throw existingErr;
+
+      const existingVideoIds = new Set((existingScenes || []).map((s: any) => String(s.video_id || '')).filter(Boolean));
+
+      const newVideos = allYoutubeVideos.filter((v) => !existingVideoIds.has(v.videoId));
+
+      setRefreshProgress(`Found ${newVideos.length} new videos. Adding...`);
+
+      if (newVideos.length > 0) {
+        const scenesToInsert = newVideos.map((video) => ({
+          user_id: authUser.id,
+          playlist_id: playlistId,
+          title: video.title,
+          platform: 'YouTube' as const,
+          category: 'F/M' as const,
+          url: video.url,
+          thumbnail: video.thumbnail || null,
+          video_id: video.videoId,
+          channel_name: video.channelTitle || null,
+          status: 'available' as const,
+          source_type: 'youtube_playlist' as const,
+          updated_at: new Date().toISOString(),
+        }));
+
+        const { error: insertErr } = await supabase.from('scenes').insert(scenesToInsert as any).select();
+        if (insertErr) {
+          const msg = String((insertErr as any)?.message || '').toLowerCase();
+          const looksLikeColumnErr = msg.includes('column') || msg.includes('does not exist') || msg.includes('schema cache');
+          if (!looksLikeColumnErr) throw insertErr;
+
+          const minimalScenes = newVideos.map((video) => ({
+            user_id: authUser.id,
+            playlist_id: playlistId,
+            title: video.title,
+            platform: 'YouTube' as const,
+            category: 'F/M' as const,
+            url: video.url,
+            thumbnail: video.thumbnail || null,
+            status: 'available' as const,
+            updated_at: new Date().toISOString(),
+          }));
+          const { error: fallbackErr } = await supabase.from('scenes').insert(minimalScenes as any).select();
+          if (fallbackErr) throw fallbackErr;
+        }
+      }
+
+      const thumbForPlaylist =
+        selectedPlaylistMeta?.thumbnail ||
+        allYoutubeVideos.find((v) => !!v.thumbnail)?.thumbnail ||
+        null;
+
+      await youtubeService.createPlaylist({
+        user_id: authUser.id,
+        playlist_id: playlistId,
+        title: playlistTitle || selectedPlaylistMeta?.title || `Playlist: ${playlistId}`,
+        thumbnail: thumbForPlaylist || undefined,
+        description: selectedPlaylistMeta?.description,
+        video_count: allYoutubeVideos.length,
+        updated_at: new Date().toISOString(),
+      });
+
+      setRefreshProgress('Done!');
+      setRefreshResult({ newVideos: newVideos.length, totalVideos: allYoutubeVideos.length });
+
+      await loadData();
+    } catch (e: any) {
+      setRefreshError(e?.message || 'Failed to refresh playlist');
+    } finally {
+      setRefreshing(false);
+      setRefreshingPlaylistId(null);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <PlatformHeader
@@ -345,20 +642,45 @@ export function PlatformPage() {
           onClick: handleOpenAdd,
           icon: <Plus className="w-5 h-5" />,
         }}
-        secondaryAction={
+        additionalActions={
           isYouTube
-            ? {
-                label: 'Import Playlist',
-                onClick: () => setShowYouTubeImport(true),
-                icon: <Youtube className="w-5 h-5" />,
-              }
+            ? [
+                {
+                  label: checkingAll ? 'Checking…' : 'Check All Videos',
+                  onClick: handleCheckAllVideos,
+                  icon: checkingAll ? <Loader2 className="w-5 h-5 animate-spin" /> : <RefreshCw className="w-5 h-5" />,
+                  disabled: checkingAll,
+                },
+              ]
             : undefined
+        }
+        secondaryAction={
+          isYouTube && selectedYouTubePlaylistId && selectedYouTubePlaylistId !== '__manual__'
+            ? {
+                label: refreshing && refreshingPlaylistId === selectedYouTubePlaylistId ? 'Refreshing…' : 'Refresh Playlist',
+                onClick: () => {
+                  void handleRefreshPlaylist(selectedYouTubePlaylistId, selectedPlaylistMeta?.title);
+                },
+                icon: refreshing && refreshingPlaylistId === selectedYouTubePlaylistId ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : (
+                  <RefreshCw className="w-5 h-5" />
+                ),
+              }
+            : isYouTube
+              ? {
+                  label: 'Import Playlist',
+                  onClick: () => setShowYouTubeImport(true),
+                  icon: <Youtube className="w-5 h-5" />,
+                }
+              : undefined
         }
         tertiaryAction={
           isYouTube && selectedYouTubePlaylistId
             ? {
                 label: 'Back to Playlists',
                 onClick: handleBackToPlaylists,
+                icon: <ArrowLeft className="w-5 h-5" />,
               }
             : undefined
         }
@@ -380,7 +702,9 @@ export function PlatformPage() {
         onSortByChange={setSortBy}
         activeChip={activeChip}
         onChipChange={setActiveChip}
-        onOpenFilters={() => {}}
+        filters={filters}
+        onApplyFilters={setFilters}
+        onClearAllFilters={() => setFilters(defaultAdvancedFilters)}
       />
 
       {!platformType && (
@@ -401,7 +725,7 @@ export function PlatformPage() {
 
       {platformType && !loading && !error && showPlaylistGrid && (
         <div className="space-y-6">
-          <div className="grid [grid-template-columns:repeat(auto-fill,minmax(320px,1fr))] gap-6">
+          <div className="grid grid-cols-1 sm:[grid-template-columns:repeat(auto-fill,minmax(320px,1fr))] gap-6">
             <button
               type="button"
               onClick={() => setSelectedYouTubePlaylistId('__manual__')}
@@ -423,8 +747,32 @@ export function PlatformPage() {
                 onClick={() => {
                   setSelectedYouTubePlaylistId(p.playlist_id);
                 }}
-                className="card p-5 text-left hover:shadow-[0_18px_40px_rgba(0,0,0,0.55)] transition"
+                className="card p-5 text-left hover:shadow-[0_18px_40px_rgba(0,0,0,0.55)] transition relative group"
               >
+                {p.hasMeta && (
+                  <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <div
+                      role="button"
+                      tabIndex={-1}
+                      aria-label="Refresh playlist"
+                      title="Refresh Playlist"
+                      className="w-9 h-9 rounded-full bg-black/70 text-white flex items-center justify-center hover:bg-black/80 border border-white/10"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (refreshing) return;
+                        void handleRefreshPlaylist(p.playlist_id, p.title);
+                      }}
+                    >
+                      {refreshing && refreshingPlaylistId === p.playlist_id ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <RefreshCw className="w-4 h-4" />
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 <div className="w-full aspect-video rounded-[12px] bg-[var(--bg-tertiary)] border border-[var(--bg-tertiary)] overflow-hidden mb-4">
                   {p.thumbnail ? (
                     <img src={p.thumbnail} alt={p.title} className="w-full h-full object-cover" />
@@ -467,7 +815,7 @@ export function PlatformPage() {
       )}
 
       {platformType && !loading && !error && !showPlaylistGrid && filteredScenes.length > 0 && (
-        <div className="grid [grid-template-columns:repeat(auto-fill,minmax(320px,1fr))] gap-6">
+        <div className="grid grid-cols-1 sm:[grid-template-columns:repeat(auto-fill,minmax(320px,1fr))] gap-6">
           {filteredScenes.map((scene) => (
             <SceneCard
               key={scene.id}
@@ -502,6 +850,14 @@ export function PlatformPage() {
           }}
           onDelete={handleDeleteScene}
           onCheckStatus={handleCheckStatus}
+          onUpdate={async (scene, data) => {
+            await sceneService.updateScene(scene.id, {
+              ...data,
+              updated_at: new Date().toISOString(),
+            } as any);
+            await loadData();
+            setDetailScene((prev) => (prev && prev.id === scene.id ? { ...prev, ...data, updated_at: new Date().toISOString() } as any : prev));
+          }}
         />
       )}
 
@@ -512,6 +868,38 @@ export function PlatformPage() {
           onOpenSettings={() => navigate('/settings')}
         />
       )}
+
+      <CheckAllVideosModal
+        open={checkModalOpen}
+        checking={checkingAll}
+        current={checkProgress.current}
+        total={checkProgress.total}
+        error={checkError}
+        onCancel={handleCancelCheckAll}
+        onClose={() => {
+          if (checkingAll) return;
+          setCheckModalOpen(false);
+          setCheckError(null);
+        }}
+        onOpenSettings={() => navigate('/settings')}
+      />
+
+      <RefreshPlaylistModal
+        open={refreshModalOpen}
+        refreshing={refreshing}
+        progress={refreshProgress}
+        error={refreshError}
+        result={refreshResult}
+        onCancel={handleCancelRefresh}
+        onClose={() => {
+          if (refreshing) return;
+          setRefreshModalOpen(false);
+          setRefreshError(null);
+          setRefreshResult(null);
+          setRefreshProgress('');
+        }}
+        onOpenSettings={() => navigate('/settings')}
+      />
     </div>
   );
 }

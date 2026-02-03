@@ -29,7 +29,7 @@ export function SceneCardSkeleton() {
 
 export function SceneGridSkeleton({ count = 12 }: { count?: number }) {
   return (
-    <div className={`grid [grid-template-columns:repeat(auto-fill,minmax(320px,1fr))] gap-6`}>
+    <div className={`grid grid-cols-1 sm:[grid-template-columns:repeat(auto-fill,minmax(320px,1fr))] gap-6`}>
       {Array.from({ length: count }).map((_, i) => (
         <SceneCardSkeleton key={i} />
       ))}
@@ -55,7 +55,7 @@ export function PlaylistCardSkeleton() {
 
 export function PlaylistGridSkeleton({ count = 6 }: { count?: number }) {
   return (
-    <div className={`grid [grid-template-columns:repeat(auto-fill,minmax(320px,1fr))] gap-6`}>
+    <div className={`grid grid-cols-1 sm:[grid-template-columns:repeat(auto-fill,minmax(320px,1fr))] gap-6`}>
       {Array.from({ length: count }).map((_, i) => (
         <PlaylistCardSkeleton key={i} />
       ))}

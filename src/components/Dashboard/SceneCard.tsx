@@ -150,6 +150,20 @@ export function SceneCard({ scene, onEdit, onDelete, onCheckStatus, onViewDetail
           onMouseEnter={handleThumbMouseEnter}
           onMouseLeave={handleThumbMouseLeave}
         >
+          {normalizedStatus !== 'available' && (
+            <div
+              className={[
+                'absolute top-2 left-2 z-20 inline-flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-semibold border',
+                normalizedStatus === 'private'
+                  ? 'bg-[rgba(245,158,11,0.16)] text-[#fbbf24] border-[rgba(245,158,11,0.30)]'
+                  : 'bg-[rgba(239,68,68,0.16)] text-[var(--status-unavailable)] border-[rgba(239,68,68,0.30)]',
+              ].join(' ')}
+            >
+              {normalizedStatus === 'private' ? <Lock className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
+              <span>{normalizedStatus === 'private' ? 'Private' : 'Unavailable'}</span>
+            </div>
+          )}
+
           {showVideo && scene.url && scene.url.includes('youtube.com') ? (
             <video
               ref={videoRef}

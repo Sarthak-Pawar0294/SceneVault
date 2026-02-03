@@ -71,9 +71,9 @@ export function SceneDetailModal({
   };
 
   const handleThumbnailClick = () => {
-    if (scene.url) {
-      window.open(scene.url, '_blank');
-    }
+    const url = scene.url || (scene.video_id ? `https://www.youtube.com/watch?v=${scene.video_id}` : '');
+    if (!url) return;
+    window.open(url, '_blank', 'noopener,noreferrer');
   };
 
   const formattedDate = scene.created_at
@@ -153,24 +153,23 @@ export function SceneDetailModal({
                   <div className="w-full h-full bg-zinc-800" />
                 )}
 
-                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors duration-300 flex items-center justify-center">
-                  <div className="bg-red-600 rounded-full p-4 shadow-lg transform group-hover:scale-110 transition-transform duration-300">
-                    <Play className="w-8 h-8 text-white fill-white" />
+                {scene.platform === 'YouTube' && (scene.url || scene.video_id) && (
+                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/35 transition-colors duration-300 flex items-center justify-center">
+                    <button
+                      type="button"
+                      className="bg-red-600 hover:bg-red-700 text-white font-semibold rounded-full px-8 py-4 shadow-lg transform group-hover:scale-105 transition flex items-center gap-3"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleThumbnailClick();
+                      }}
+                    >
+                      <Play className="w-7 h-7 text-white fill-white" />
+                      <span className="text-lg">Play on YouTube</span>
+                    </button>
                   </div>
-                </div>
+                )}
               </div>
-
-              {scene.platform === 'YouTube' && scene.url && (
-                <a
-                  href={scene.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center justify-center space-x-2 w-full px-6 py-3 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg transition transform active:scale-95"
-                >
-                  <Youtube className="w-5 h-5" />
-                  <span>Watch on YouTube</span>
-                </a>
-              )}
             </div>
 
             <div className="space-y-4">

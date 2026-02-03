@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import {
   Home,
@@ -16,6 +16,7 @@ import {
   Film,
 } from 'lucide-react';
 import { Platform } from '../../types';
+import { SignOutModal } from './SignOutModal';
 
 export type SidebarSection = 'all' | Platform | 'profile' | 'tags';
 
@@ -29,6 +30,7 @@ interface SidebarProps {
 
 export function Sidebar({ active, onNavigate, onOpenSettings, open, onOpenChange }: SidebarProps) {
   const { user, signOut } = useAuth();
+  const [showSignOut, setShowSignOut] = useState(false);
 
   const navItems = useMemo(
     () =>
@@ -129,8 +131,7 @@ export function Sidebar({ active, onNavigate, onOpenSettings, open, onOpenChange
             type="button"
             className={linkClass(false)}
             onClick={() => {
-              signOut();
-              onOpenChange(false);
+              setShowSignOut(true);
             }}
           >
             <span className="text-[var(--text-secondary)]">
@@ -145,7 +146,17 @@ export function Sidebar({ active, onNavigate, onOpenSettings, open, onOpenChange
 
   return (
     <>
-      <div className="md:hidden fixed top-4 left-4 z-[1001]">
+      <SignOutModal
+        open={showSignOut}
+        onCancel={() => setShowSignOut(false)}
+        onConfirm={() => {
+          setShowSignOut(false);
+          void signOut();
+          onOpenChange(false);
+        }}
+      />
+
+      <div className="md:hidden fixed top-4 left-4 z-[101]">
         <button
           type="button"
           className="p-3 rounded-[12px] bg-[var(--bg-secondary)] text-white hover:bg-[var(--bg-tertiary)]"
@@ -156,10 +167,10 @@ export function Sidebar({ active, onNavigate, onOpenSettings, open, onOpenChange
         </button>
       </div>
 
-      <div className="hidden md:block fixed inset-y-0 left-0 w-[240px] z-[1000]">{panel}</div>
+      <div className="hidden md:block fixed inset-y-0 left-0 w-[240px] z-[100]">{panel}</div>
 
       {open && (
-        <div className="md:hidden fixed inset-0 z-[1000]">
+        <div className="md:hidden fixed inset-0 z-[150]">
           <div
             className="absolute inset-0 bg-black/70"
             onClick={() => onOpenChange(false)}
