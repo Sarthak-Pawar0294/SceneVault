@@ -8,6 +8,7 @@ interface SettingsModalProps {
 export function SettingsModal({ onClose }: SettingsModalProps) {
   const [apiKey, setApiKey] = useState('');
   const [showKey, setShowKey] = useState(false);
+  const [deletedPlaylistVideos, setDeletedPlaylistVideos] = useState<'mark' | 'remove'>('mark');
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
   const [isValidating, setIsValidating] = useState(false);
@@ -17,6 +18,11 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     const stored = localStorage.getItem('youtube_api_key');
     if (stored) {
       setApiKey(stored);
+    }
+
+    const storedDeletedPref = localStorage.getItem('youtube_deleted_playlist_videos');
+    if (storedDeletedPref === 'remove' || storedDeletedPref === 'mark') {
+      setDeletedPlaylistVideos(storedDeletedPref);
     }
   }, []);
 
@@ -83,6 +89,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     const isValid = await validateApiKey(apiKey);
     if (isValid) {
       localStorage.setItem('youtube_api_key', apiKey);
+      localStorage.setItem('youtube_deleted_playlist_videos', deletedPlaylistVideos);
       setSaved(true);
       setTested(false);
       setTimeout(() => setSaved(false), 3000);
@@ -185,6 +192,43 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                 <li>Create an API key credential</li>
                 <li>Paste the key above</li>
               </ol>
+            </div>
+          </div>
+
+          <div>
+            <h3 className="text-sm font-semibold text-white mb-2">Playlist Refresh</h3>
+            <p className="text-xs text-zinc-400 mb-4">
+              Choose what to do when a video is removed from a YouTube playlist.
+            </p>
+
+            <div className="space-y-2">
+              <label className="flex items-start gap-3 cursor-pointer">
+                <input
+                  type="radio"
+                  name="youtube_deleted_playlist_videos"
+                  value="mark"
+                  checked={deletedPlaylistVideos === 'mark'}
+                  onChange={() => setDeletedPlaylistVideos('mark')}
+                />
+                <div>
+                  <div className="text-sm text-white">Mark as unavailable (keep in SceneVault)</div>
+                  <div className="text-xs text-zinc-500">Keeps the scene, but sets status to unavailable.</div>
+                </div>
+              </label>
+
+              <label className="flex items-start gap-3 cursor-pointer">
+                <input
+                  type="radio"
+                  name="youtube_deleted_playlist_videos"
+                  value="remove"
+                  checked={deletedPlaylistVideos === 'remove'}
+                  onChange={() => setDeletedPlaylistVideos('remove')}
+                />
+                <div>
+                  <div className="text-sm text-white">Remove from SceneVault completely</div>
+                  <div className="text-xs text-zinc-500">Deletes the scene when it’s no longer in the playlist.</div>
+                </div>
+              </label>
             </div>
           </div>
 

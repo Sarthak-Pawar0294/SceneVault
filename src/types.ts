@@ -60,6 +60,7 @@ export interface YouTubePlaylist {
   thumbnail?: string;
   video_count: number;
   imported_at: string;
+  last_checked?: string;
   updated_at: string;
 }
 

@@ -3,6 +3,8 @@ import { Loader2, X } from 'lucide-react';
 
 interface RefreshResult {
   newVideos: number;
+  deletedVideos: number;
+  deletedAction: 'marked' | 'removed';
   totalVideos: number;
 }
 
@@ -51,15 +53,27 @@ export function RefreshPlaylistModal({
     if (error) return { title: 'Refresh failed', subtitle: error };
 
     if (result) {
-      if (result.newVideos > 0) {
+      const deletedText =
+        result.deletedVideos > 0
+          ? `${result.deletedAction === 'removed' ? 'Removed' : 'Marked'} ${result.deletedVideos} deleted video${result.deletedVideos === 1 ? '' : 's'}`
+          : null;
+
+      if (result.newVideos > 0 || result.deletedVideos > 0) {
         return {
           title: 'Playlist Updated!',
-          subtitle: `${result.newVideos} new videos added\nTotal videos in playlist: ${result.totalVideos}`,
+          subtitle: [
+            result.newVideos > 0 ? `Added ${result.newVideos} new video${result.newVideos === 1 ? '' : 's'}` : null,
+            deletedText,
+            `Total videos in playlist: ${result.totalVideos}`,
+          ]
+            .filter(Boolean)
+            .join('\n'),
         };
       }
+
       return {
         title: 'Playlist Updated!',
-        subtitle: `No new videos found. Your playlist is up to date!\nTotal videos in playlist: ${result.totalVideos}`,
+        subtitle: `No changes found. Your playlist is up to date!\nTotal videos in playlist: ${result.totalVideos}`,
       };
     }
 

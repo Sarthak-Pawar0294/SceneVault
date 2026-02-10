@@ -116,7 +116,12 @@ export function PlatformPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [refreshProgress, setRefreshProgress] = useState('');
   const [refreshError, setRefreshError] = useState<string | null>(null);
-  const [refreshResult, setRefreshResult] = useState<{ newVideos: number; totalVideos: number } | null>(null);
+  const [refreshResult, setRefreshResult] = useState<{
+    newVideos: number;
+    deletedVideos: number;
+    deletedAction: 'marked' | 'removed';
+    totalVideos: number;
+  } | null>(null);
   const [refreshingPlaylistId, setRefreshingPlaylistId] = useState<string | null>(null);
   const cancelRefreshRef = useRef(false);
 
@@ -490,6 +495,11 @@ export function PlatformPage() {
       const apiKey = localStorage.getItem('youtube_api_key') || '';
       if (!apiKey) throw new Error('YouTube API key not configured. Go to Settings.');
 
+      const deletedPreference = (localStorage.getItem('youtube_deleted_playlist_videos') || 'mark') as
+        | 'mark'
+        | 'remove';
+      const deletedActionLabel: 'marked' | 'removed' = deletedPreference === 'remove' ? 'removed' : 'marked';
+
       const { data: authData, error: authErr } = await supabase.auth.getUser();
       if (authErr) throw authErr;
       const authUser = authData.user;
@@ -503,9 +513,13 @@ export function PlatformPage() {
         url: string;
       }> = [];
 
+      let pageIndex = 0;
       let nextPageToken: string | null = null;
       do {
         if (cancelRefreshRef.current) break;
+
+        pageIndex += 1;
+        setRefreshProgress(`Fetching latest videos from YouTube... (page ${pageIndex}, ${allYoutubeVideos.length} found)`);
 
         const url = new URL('https://www.googleapis.com/youtube/v3/playlistItems');
         url.searchParams.set('part', 'snippet');
@@ -549,22 +563,61 @@ export function PlatformPage() {
         return;
       }
 
-      setRefreshProgress('Checking for new videos...');
+      setRefreshProgress('Comparing playlist with your library...');
+
+      const youtubeVideoIdSet = new Set(allYoutubeVideos.map((v) => v.videoId).filter(Boolean));
 
       const { data: existingScenes, error: existingErr } = await supabase
         .from('scenes')
-        .select('video_id')
+        .select('id, video_id')
         .eq('user_id', authUser.id)
         .eq('platform', 'YouTube')
         .eq('playlist_id', playlistId)
         .not('video_id', 'is', 'null');
       if (existingErr) throw existingErr;
 
-      const existingVideoIds = new Set((existingScenes || []).map((s: any) => String(s.video_id || '')).filter(Boolean));
+      const existingRows = (existingScenes || []) as any[];
+      const existingVideoIds = new Set(existingRows.map((s: any) => String(s.video_id || '')).filter(Boolean));
+
+      const deletedSceneIds = existingRows
+        .filter((s: any) => {
+          const vid = String(s?.video_id || '').trim();
+          return !!vid && !youtubeVideoIdSet.has(vid);
+        })
+        .map((s: any) => String(s?.id || '').trim())
+        .filter(Boolean);
 
       const newVideos = allYoutubeVideos.filter((v) => !existingVideoIds.has(v.videoId));
 
-      setRefreshProgress(`Found ${newVideos.length} new videos. Adding...`);
+      let deletedCount = 0;
+
+      if (deletedSceneIds.length > 0) {
+        deletedCount = deletedSceneIds.length;
+        setRefreshProgress(
+          `${deletedPreference === 'remove' ? 'Removing' : 'Marking'} ${deletedSceneIds.length} deleted video${
+            deletedSceneIds.length === 1 ? '' : 's'
+          }...`
+        );
+
+        if (deletedPreference === 'remove') {
+          const { error: deleteErr } = await supabase
+            .from('scenes')
+            .delete()
+            .eq('user_id', authUser.id)
+            .in('id', deletedSceneIds);
+          if (deleteErr) throw deleteErr;
+        } else {
+          const checkedAt = new Date().toISOString();
+          const { error: updateErr } = await supabase
+            .from('scenes')
+            .update({ status: 'unavailable', updated_at: checkedAt })
+            .eq('user_id', authUser.id)
+            .in('id', deletedSceneIds);
+          if (updateErr) throw updateErr;
+        }
+      }
+
+      setRefreshProgress(`Found ${newVideos.length} new video${newVideos.length === 1 ? '' : 's'}. Adding...`);
 
       if (newVideos.length > 0) {
         const scenesToInsert = newVideos.map((video) => ({
@@ -616,11 +669,17 @@ export function PlatformPage() {
         thumbnail: thumbForPlaylist || undefined,
         description: selectedPlaylistMeta?.description,
         video_count: allYoutubeVideos.length,
+        last_checked: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       });
 
       setRefreshProgress('Done!');
-      setRefreshResult({ newVideos: newVideos.length, totalVideos: allYoutubeVideos.length });
+      setRefreshResult({
+        newVideos: newVideos.length,
+        deletedVideos: deletedCount,
+        deletedAction: deletedActionLabel,
+        totalVideos: allYoutubeVideos.length,
+      });
 
       await loadData();
     } catch (e: any) {
